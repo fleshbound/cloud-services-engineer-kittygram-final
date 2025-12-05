@@ -6,7 +6,7 @@ volumes:
   media:
 
 services:
-  db:
+  postgres:
     image: postgres:13
     env_file: .env
     volumes:
@@ -16,7 +16,7 @@ services:
     image: sheglar/kittygram_backend
     env_file: .env
     depends_on:
-      - db
+      - postgres
     volumes:
       - static:/static
       - media:/app/media

@@ -1,6 +1,6 @@
-FROM python:3.10 AS build
+FROM python:3.9
 
-WORKDIR /code
+WORKDIR /app
 
 COPY requirements.txt .
 
@@ -8,12 +8,4 @@ RUN pip install -r requirements.txt --no-cache-dir
 
 COPY . .
 
-FROM python:3.10-alpine
-
-ENV PYTHONUNBUFFERED=1
-
-COPY --from=build /code /code
-
-EXPOSE 8080
-
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8080"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "kittygram_backend.wsgi"]
