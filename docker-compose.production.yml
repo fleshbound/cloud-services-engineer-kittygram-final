@@ -1,10 +1,5 @@
 version: '3'
 
-volumes:
-  pg_data:
-  static:
-  media:
-
 services:
   postgres:
     image: postgres:13
@@ -24,8 +19,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
-      - static:/static
-      - media:/media
+      - be_static:/app/collected_static
+      - media:/app/media
   
   frontend:
     image: sheglar/kittygram_frontend
@@ -33,9 +28,8 @@ services:
     depends_on:
       backend:
         condition: service_started
-    command: cp -r /app/build/. /static/
     volumes:
-      - static:/static
+      - fe_static:/app/build
   
   gateway:
     image: sheglar/kittygram_gateway
@@ -48,5 +42,12 @@ services:
     ports:
       - 9000:80
     volumes:
-      - static:/static
-      - media:/media
+      - fe_static:/var/html/static
+      - be_static:/var/html/backend
+      - media:/var/html/media
+
+volumes:
+  pg_data:
+  media:
+  be_static:
+  fe_static:
