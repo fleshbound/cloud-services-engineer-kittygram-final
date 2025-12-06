@@ -1,10 +1,5 @@
 version: '3'
 
-volumes:
-  pg_data:
-  static:
-  media:
-
 services:
   postgres:
     image: postgres:13
@@ -23,17 +18,16 @@ services:
     depends_on:
       - postgres
     volumes:
-      - static:/static
-      - media:/media
+      - be_static:/app/collected_static
+      - media:/app/media
 
   frontend:
     env_file: .env
     build: ./frontend/
     depends_on:
       - backend
-    command: cp -r /app/build/. /static/
     volumes:
-      - static:/static
+      - fe_static:/app/build
 
   gateway:
     env_file: .env
@@ -43,6 +37,12 @@ services:
     ports:
       - 9000:80
     volumes:
-      - static:/static
-      - media:/media
+      - fe_static:/var/html/static
+      - be_static:/var/html/backend
+      - media:/var/html/media
 
+volumes:
+  pg_data:
+  media:
+  be_static:
+  fe_static:

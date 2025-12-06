@@ -121,10 +121,8 @@ jobs:
 
             sudo docker compose -f docker-compose.production.yml down
             sudo docker compose -f docker-compose.production.yml up -d
+            # Миграция и сбор статики перемещены в отдельный скрипт, см. backend/Dockerfile
 
-            sudo docker compose -f docker-compose.production.yml exec backend python manage.py migrate
-            sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic --no-input
-  
   server_tests:
     name: Test deployed app
     runs-on: ubuntu-latest
