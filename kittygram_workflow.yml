@@ -9,13 +9,16 @@ jobs:
   backend_tests:
     name: Backend tests
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.9", "3.10", "3.11" ]
     steps:
     - uses: actions/checkout@v3
 
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.9
+        python-version: ${{ matrix.python-version }}
 
     - name: Update pip
       run: |
@@ -123,8 +126,7 @@ jobs:
             sudo docker compose -f docker-compose.production.yml up -d
 
             sudo docker compose -f docker-compose.production.yml exec backend python manage.py migrate
-            sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic
-            sudo docker compose -f docker-compose.production.yml exec backend cp -r /app/collected_static/. /static/static/
+            sudo docker compose -f docker-compose.production.yml exec backend python manage.py collectstatic --no-input
   
   server_tests:
     name: Test deployed app
@@ -147,17 +149,36 @@ jobs:
       - deploy
       - server_tests
     steps:
-      - name: Send message
+      - name: Send success message
+        if: success()
         uses: appleboy/telegram-action@master
         with:
           to: ${{ secrets.TELEGRAM_TO }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
           message: |
-            ✅ Приложение Kittygram прошло тесты и успешно развернуто!
+            ✅ Приложение Kittygram успешно развернуто, все тесты пройдены!
 
             Информация о коммите:
             Автор: ${{ github.actor }}
             Сообщение: ${{ github.event.commits[0].message }}
             Репозиторий: ${{ github.repository }}
+            Ветка: ${{ github.ref_name }}
+            
+            Детали: https://github.com/${{ github.repository }}/commit/${{github.sha}}
+
+      - name: Send success message
+        if: failure()
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: |
+            ❌ Не удалось развернуть и протестировать Kittygram!
+
+            Информация о коммите:
+            Автор: ${{ github.actor }}
+            Сообщение: ${{ github.event.commits[0].message }}
+            Репозиторий: ${{ github.repository }}
+            Ветка: ${{ github.ref_name }}
             
             Детали: https://github.com/${{ github.repository }}/commit/${{github.sha}}
