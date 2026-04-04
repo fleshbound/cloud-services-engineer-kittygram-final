@@ -4,148 +4,133 @@ on:
   push:
     branches:
       - main
+  workflow_run:
+    workflows: ["Terraform Infrastructure"]
+    types:
+      - completed
 
 jobs:
-  backend_tests:
-    name: Backend tests
+  get_infra_outputs:
+    name: Get VM IP from Terraform
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: [ "3.9", "3.10", "3.11" ]
+    outputs:
+      vm_ip: ${{ steps.get_ip.outputs.vm_ip }}
     steps:
-    - uses: actions/checkout@v3
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: |
-        python3 -m pip install --upgrade pip
-        cd backend && pip install -r requirements.txt --no-cache-dir
-    
-    - name: Run PEP8 check
-      run: |
-        cd backend/
-        python -m flake8
-  
-  frontend_tests:
-    name: Frontend tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
+      - name: Checkout code
+        uses: actions/checkout@v4
       
-      - name: Set up nodeJS
-        uses: actions/setup-node@v3
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
-          node-version: 18
+          terraform_version: 1.8.3
       
-      - name: Install dependencies
+      - name: Set up Yandex Cloud service account key
+        working-directory: ./infra
         run: |
-          cd frontend/
-          npm ci
+          echo "${{ secrets.YC_KEY_JSON }}" | base64 -d > ./authorized_key.json
       
-      - name: Test frontend
+      - name: Terraform Init
+        working-directory: ./infra
+        run: terraform init -backend-config="access_key=${{ secrets.ACCESS_KEY }}" -backend-config="secret_key=${{ secrets.SECRET_KEY }}"
+      
+      - name: Get VM IP
+        id: get_ip
+        working-directory: ./infra
         run: |
-          cd frontend/
-          npm run test
-  
-  push_to_registry:
-    name: Build and push docker images to registry
-    runs-on: ubuntu-latest
-    needs: 
-     - backend_tests
-     - frontend_tests
-    steps:
-      - name: Check out the repo
-        uses: actions/checkout@v3
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      
-      - name: Login DockerHub 
-        uses: docker/login-action@v2
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }} 
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      
-      - name: Build and push backend Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: ./backend/
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/kittygram_backend:latest
+          VM_IP=$(terraform output -raw vm_ip 2>/dev/null || echo "")
+          if [ -z "$VM_IP" ]; then
+            # Если output не задан, получаем IP из state
+            VM_IP=$(terraform show -json | jq -r '.values.root_module.resources[] | select(.type=="yandex_compute_instance") | .values.network_interface[0].nat_ip_address')
+          fi
+          echo "vm_ip=$VM_IP" >> $GITHUB_OUTPUT
+          echo "VM IP: $VM_IP"
 
-      - name: Build and push frontend image to DockerHub
-        uses: docker/build-push-action@v4
-        with:
-          context: ./frontend/
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/kittygram_frontend:latest 
-      
-      - name: Build and push gateway image to DockerHub
-        uses: docker/build-push-action@v4
-        with:
-          context: ./nginx/
-          push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/kittygram_gateway:latest
-  
   deploy:
     name: Deploy to server
     runs-on: ubuntu-latest
-    needs: push_to_registry
+    needs: 
+      - push_to_registry
+      - get_infra_outputs
+    if: needs.get_infra_outputs.outputs.vm_ip != ''
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       - name: Copy docker-compose.yml via SSH
         uses: appleboy/scp-action@master
         with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
+          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "docker-compose.production.yml"
           target: "kittygram"
       
-      - name: Executing remote ssh commands to deploy
+      - name: Create .env file on server
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ secrets.HOST }}
-          username: ${{ secrets.USER }}
+          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
+          username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd kittygram
-
+            cat > .env << EOF
+            DB_ENGINE=${{ secrets.DB_ENGINE }}
+            DB_NAME=${{ secrets.DB_NAME }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            DB_HOST=${{ secrets.DB_HOST }}
+            DB_PORT=${{ secrets.DB_PORT }}
+            SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
+            ALLOWED_HOSTS=${{ needs.get_infra_outputs.outputs.vm_ip }}
+            EOF
+      
+      - name: Executing remote ssh commands to deploy
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd kittygram
             sudo docker compose -f docker-compose.production.yml pull
-
             sudo docker compose -f docker-compose.production.yml down
             sudo docker compose -f docker-compose.production.yml up -d
-            # Миграция и сбор статики перемещены в отдельный скрипт, см. backend/Dockerfile
+      
+      - name: Save VM IP to output
+        run: |
+          echo "DEPLOYED_VM_IP=${{ needs.get_infra_outputs.outputs.vm_ip }}" >> $GITHUB_ENV
 
   server_tests:
     name: Test deployed app
     runs-on: ubuntu-latest
-    needs: deploy
+    needs: 
+      - deploy
+      - push_to_registry
     strategy:
       matrix:
         python-version: [ "3.9", "3.10", "3.11" ]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
-
+        uses: actions/checkout@v4
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
-
+      
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip 
           pip install -r ./backend/requirements.txt 
-
+      
+      - name: Update tests.yml with VM IP
+        run: |
+          sed -i 's/host:.*/host: ${{ needs.deploy.env.DEPLOYED_VM_IP }}/' tests.yml || true
+      
       - name: Run tests
         run: python -m pytest
+        env:
+          TEST_HOST: ${{ needs.deploy.env.DEPLOYED_VM_IP }}
 
   notify:
     name: Notify in Telegram
