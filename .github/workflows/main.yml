@@ -45,6 +45,51 @@ jobs:
           echo "vm_ip=$VM_IP" >> $GITHUB_OUTPUT
           echo "VM IP: $VM_IP"
 
+  backend_tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.9", "3.10", "3.11" ]
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        cd backend && pip install -r requirements.txt --no-cache-dir
+    
+    - name: Run PEP8 check
+      run: |
+        cd backend/
+        python -m flake8
+  
+  frontend_tests:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up nodeJS
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      
+      - name: Install dependencies
+        run: |
+          cd frontend/
+          npm ci
+      
+      - name: Test frontend
+        run: |
+          cd frontend/
+          npm run test
+
   push_to_registry:
     name: Build and push docker images to registry
     runs-on: ubuntu-latest
