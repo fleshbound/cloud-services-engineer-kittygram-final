@@ -9,9 +9,7 @@ terraform {
   required_version = ">= 0.13"
 
   backend "s3" {
-    endpoints {
-      s3 = "https://storage.yandexcloud.net"
-    }
+    endpoint = "https://storage.yandexcloud.net"
     bucket  = "sheglar"
     region  = "ru-central1"
     key     = "tf-state.tfstate"
