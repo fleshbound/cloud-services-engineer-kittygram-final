@@ -203,7 +203,8 @@ jobs:
       
       - name: Update tests.yml with VM IP
         run: |
-          sed -i 's/host:.*/host: ${{ steps.read-ip.outputs.VM_IP }}/' tests.yml || true
+          sed -i 's|kittygram_domain:.*|kittygram_domain: http://${{ steps.read-ip.outputs.VM_IP }}/|' tests.yml
+          cat tests.yml
       
       - name: Run tests
         run: python -m pytest
