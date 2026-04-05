@@ -7,44 +7,36 @@ on:
       - completed
 
 jobs:
-  get_infra_outputs:
-    name: Get VM IP from Terraform
+  gate:
+    name: Only after successful terraform apply
     runs-on: ubuntu-latest
     outputs:
-      vm_ip: ${{ steps.get_ip.outputs.vm_ip }}
+      run_ci: ${{ steps.verify.outputs.run_ci }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.8.3
-      
-      - name: Set up Yandex Cloud service account key
-        working-directory: ./infra
+      - name: Check workflow was apply (not plan/destroy)
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.YC_KEY_JSON }}" | base64 -d > ./authorized_key.json
-      
-      - name: Terraform Init
-        working-directory: ./infra
-        run: terraform init -backend-config="access_key=${{ secrets.ACCESS_KEY }}" -backend-config="secret_key=${{ secrets.SECRET_KEY }}"
-      
-      - name: Get VM IP
-        id: get_ip
-        working-directory: ./infra
-        run: |
-          VM_IP=$(terraform output -raw vm_ip 2>/dev/null || echo "")
-          if [ -z "$VM_IP" ]; then
-            # Если output не задан, получаем IP из state
-            VM_IP=$(terraform show -json | jq -r '.values.root_module.resources[] | select(.type=="yandex_compute_instance") | .values.network_interface[0].nat_ip_address')
+          set -euo pipefail
+          if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "run_ci=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "vm_ip=$VM_IP" >> $GITHUB_OUTPUT
-          echo "VM IP: $VM_IP"
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          APPLY=$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.name=="terraform") | .steps[] | select(.name=="Terraform Apply") | .conclusion' | head -n1)
+          if [ "$APPLY" = "success" ]; then
+            echo "run_ci=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_ci=false" >> "$GITHUB_OUTPUT"
+          fi
 
   backend_tests:
     name: Backend tests
     runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.run_ci == 'true'
     strategy:
       matrix:
         python-version: [ "3.9", "3.10", "3.11" ]
@@ -69,6 +61,8 @@ jobs:
   frontend_tests:
     name: Frontend tests
     runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.run_ci == 'true'
     steps:
       - uses: actions/checkout@v3
       
@@ -93,6 +87,7 @@ jobs:
     needs: 
      - backend_tests
      - frontend_tests
+    if: github.ref == 'refs/heads/main'
     steps:
       - name: Check out the repo
         uses: actions/checkout@v3
@@ -132,55 +127,45 @@ jobs:
     runs-on: ubuntu-latest
     needs: 
       - push_to_registry
-      - get_infra_outputs
-    if: needs.get_infra_outputs.outputs.vm_ip != ''
+    if: github.ref == 'refs/heads/main'
     steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vm-ip
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read VM IP
+        id: read-ip
+        run: echo "VM_IP=$(cat vm_ip.txt | xargs)" >> $GITHUB_OUTPUT
+
       - name: Checkout repo
         uses: actions/checkout@v4
       
       - name: Copy docker-compose.yml via SSH
         uses: appleboy/scp-action@master
         with:
-          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
+          host: ${{ steps.read-ip.outputs.VM_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           source: "docker-compose.production.yml"
           target: "kittygram"
+          timeout: "60s"
       
-      - name: Create .env file on server
+      - name: Create .env file on server and start services
         uses: appleboy/ssh-action@master
         with:
-          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
+          host: ${{ steps.read-ip.outputs.VM_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_KEY }}
           script: |
             cd kittygram
-            cat > .env << EOF
-            DB_ENGINE=${{ secrets.DB_ENGINE }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-            DB_HOST=${{ secrets.DB_HOST }}
-            DB_PORT=${{ secrets.DB_PORT }}
-            SECRET_KEY=${{ secrets.DJANGO_SECRET_KEY }}
-            ALLOWED_HOSTS=${{ needs.get_infra_outputs.outputs.vm_ip }}
-            EOF
-      
-      - name: Executing remote ssh commands to deploy
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ needs.get_infra_outputs.outputs.vm_ip }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          script: |
-            cd kittygram
+            echo "${{ secrets.ENV_FILE }}" > .env
             sudo docker compose -f docker-compose.production.yml pull
             sudo docker compose -f docker-compose.production.yml down
             sudo docker compose -f docker-compose.production.yml up -d
-      
-      - name: Save VM IP to output
-        run: |
-          echo "DEPLOYED_VM_IP=${{ needs.get_infra_outputs.outputs.vm_ip }}" >> $GITHUB_ENV
+            sudo docker system prune -af
 
   server_tests:
     name: Test deployed app
@@ -192,6 +177,17 @@ jobs:
       matrix:
         python-version: [ "3.9", "3.10", "3.11" ]
     steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: vm-ip
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read VM IP
+        id: read-ip
+        run: echo "VM_IP=$(cat vm_ip.txt | xargs)" >> $GITHUB_OUTPUT
+
       - name: Checkout repo
         uses: actions/checkout@v4
       
@@ -207,12 +203,12 @@ jobs:
       
       - name: Update tests.yml with VM IP
         run: |
-          sed -i 's/host:.*/host: ${{ needs.deploy.env.DEPLOYED_VM_IP }}/' tests.yml || true
+          sed -i 's/host:.*/host: ${{ steps.read-ip.outputs.VM_IP }}/' tests.yml || true
       
       - name: Run tests
         run: python -m pytest
         env:
-          TEST_HOST: ${{ needs.deploy.env.DEPLOYED_VM_IP }}
+          TEST_HOST: ${{ steps.read-ip.outputs.VM_IP }}
 
   notify:
     name: Notify in Telegram
@@ -235,6 +231,7 @@ jobs:
             Сообщение: ${{ github.event.commits[0].message }}
             Репозиторий: ${{ github.repository }}
             Ветка: ${{ github.ref_name }}
+            Хост: ${{ steps.read-ip.outputs.VM_IP }}
             
             Детали: https://github.com/${{ github.repository }}/commit/${{github.sha}}
 
@@ -252,5 +249,6 @@ jobs:
             Сообщение: ${{ github.event.commits[0].message }}
             Репозиторий: ${{ github.repository }}
             Ветка: ${{ github.ref_name }}
+            Хост: ${{ steps.read-ip.outputs.VM_IP }}
             
             Детали: https://github.com/${{ github.repository }}/commit/${{github.sha}}

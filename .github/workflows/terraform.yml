@@ -13,54 +13,63 @@ on:
           - apply
           - destroy
 
+env:
+  TF_VAR_cloud_id: ${{ secrets.CLOUD_ID }}
+  TF_VAR_folder_id: ${{ secrets.FOLDER_ID }}
+  TF_VAR_ssh_key: ${{ secrets.SSH_PUBLIC_KEY }}
+  TF_VAR_aws_region: ${{ secrets.AWS_REGION || 'ru-central1' }}
+  ACCESS_KEY: ${{ secrets.ACCESS_KEY }}
+  SECRET_KEY: ${{ secrets.SECRET_KEY }}
+
 jobs:
   terraform:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
 
     - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: 1.8.3
 
     - name: Set up Yandex Cloud service account key
       working-directory: ./infra
+      env:
+        YC_KEY_B64: ${{ secrets.YC_KEY_JSON }}
       run: |
-        echo "${{ secrets.YC_KEY_JSON }}" | base64 -d > ./authorized_key.json
+        printf '%s' "$YC_KEY_B64" | base64 -d > ./authorized_key.json
 
     - name: Initialize Terraform
       working-directory: ./infra
-      run: terraform init -backend-config="access_key=${{ secrets.ACCESS_KEY }}" -backend-config="secret_key=${{ secrets.SECRET_KEY }}"
+      run: terraform init -backend-config="access_key=$ACCESS_KEY" -backend-config="secret_key=$SECRET_KEY"
 
     - name: Terraform Plan
-      working-directory: ./infra
       if: github.event.inputs.action == 'plan'
+      working-directory: ./infra
       run: terraform plan
-      env:
-        TF_VAR_cloud_id: ${{ secrets.YC_CLOUD_ID }}
-        TF_VAR_folder_id: ${{ secrets.YC_FOLDER_ID }}
-        TF_VAR_ssh_key: ${{ secrets.SSH_PUBLIC_KEY }}
-        TF_VAR_aws_region: "ru-central1"
 
     - name: Terraform Apply
-      working-directory: ./infra
       if: github.event.inputs.action == 'apply'
+      working-directory: ./infra
       run: terraform apply -auto-approve
-      env:
-        TF_VAR_cloud_id: ${{ secrets.YC_CLOUD_ID }}
-        TF_VAR_folder_id: ${{ secrets.YC_FOLDER_ID }}
-        TF_VAR_ssh_key: ${{ secrets.SSH_PUBLIC_KEY }}
-        TF_VAR_aws_region: "ru-central1"
+
+    - name: Get VM IP from Terraform output
+      if: github.event.inputs.action == 'apply' && success()
+      working-directory: ./infra
+      run: |
+        VM_IP=$(terraform output -raw vm_ip | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        echo "$VM_IP" > vm_ip.txt
+
+    - name: Upload artifact
+      if: github.event.inputs.action == 'apply' && success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: vm-ip
+        path: infra/vm_ip.txt
 
     - name: Terraform Destroy
-      working-directory: ./infra
       if: github.event.inputs.action == 'destroy'
-      run: terraform destroy -auto-approve
-      env:
-        TF_VAR_cloud_id: ${{ secrets.YC_CLOUD_ID }}
-        TF_VAR_folder_id: ${{ secrets.YC_FOLDER_ID }}
-        TF_VAR_ssh_key: ${{ secrets.SSH_PUBLIC_KEY }}
-        TF_VAR_aws_region: "ru-central1"
+      working-directory: ./infra
+      run: terraform destroy -auto-approve   
