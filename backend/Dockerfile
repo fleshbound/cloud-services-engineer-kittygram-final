@@ -12,4 +12,4 @@ RUN chmod +x /app/migrate.sh
 ENV PYTHONUNBUFFERED=1
 
 ENTRYPOINT ["/app/migrate.sh"]
-CMD ["gunicorn", "kittygram_backend.wsgi:application", "--bind", "0.0.0.0:9000"]
+CMD ["gunicorn", "kittygram_backend.wsgi:application", "--bind", "0.0.0.0:8000"]
